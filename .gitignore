@@ -4,3 +4,5 @@ memg.8
 memg.6
 memg.hi
 memg.o
+dist
+Setup.hs
