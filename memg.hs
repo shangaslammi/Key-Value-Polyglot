@@ -33,7 +33,6 @@ command = (word >>= mkCommand) <* endOfLine where
     extra  = number >> number >> return ()
     number = signed decimal >> space
 
-
 serve :: Socket -> HashTable -> IO ()
 serve socket table = loop where
     loop = do
@@ -43,7 +42,7 @@ serve socket table = loop where
         loop
 
     serveClient handle = exec $ commands $$ respond where
-        exec i   = run i >>= print
+        exec i   = run i >> return ()
         commands = EB.enumHandle 1024 handle $= E.sequence (iterParser command)
         respond  = EL.concatMapM response =$ EB.iterHandle handle
 
