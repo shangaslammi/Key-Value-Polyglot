@@ -2,15 +2,15 @@
 
 import Network
 import Control.Applicative
-import Control.Monad
 import Control.Concurrent (forkIO)
+import Control.Monad (forever)
 import Data.Attoparsec.ByteString as A
-import Data.Attoparsec.ByteString.Char8 (endOfLine, space, isSpace_w8, decimal, signed)
+import Data.Attoparsec.ByteString.Char8 (endOfLine, char, isSpace_w8, decimal, signed)
 import Data.Attoparsec.Enumerator
 import Data.ByteString.Char8 as C
 import Data.Enumerator as E
-import Data.Maybe
 import System.IO
+import System.Environment
 import qualified Data.ByteString as B
 import qualified Data.Enumerator.List as EL
 import qualified Data.Enumerator.Binary as EB
@@ -29,17 +29,18 @@ command = (word >>= mkCommand) <* endOfLine where
     mkCommand cmd   = fail $ "invalid command: " ++ C.unpack cmd
 
     word   = takeWhile1 (not.isSpace_w8) <* optional space
-    value  = decimal >>= \len -> endOfLine *> A.take len
+    value  = decimal >>= (endOfLine *>) . A.take
     extra  = number >> number >> return ()
     number = signed decimal >> space
+    space  = char ' '
 
 serve :: Socket -> HashTable -> IO ()
-serve socket table = loop where
-    loop = do
+serve socket table = acceptConn where
+    acceptConn = do
         (handle,_,_) <- accept socket
         hSetBuffering handle LineBuffering
-        forkIO $ serveClient handle
-        loop
+        _ <- forkIO $ serveClient handle
+        return ()
 
     serveClient handle = exec $ commands $$ respond where
         exec i   = run i >> return ()
@@ -62,4 +63,7 @@ main :: IO ()
 main = withSocketsDo $ do
     socket <- listenOn (PortNumber 11211)
     table  <- H.new
-    serve socket table
+    args   <- getArgs
+    case args of
+        ["--single"] -> serve socket table
+        _            -> forever $ serve socket table
