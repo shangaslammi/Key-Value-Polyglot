@@ -4,15 +4,16 @@ import Network
 import Control.Applicative
 import Control.Monad
 import Control.Concurrent (forkIO)
-import Control.Concurrent.ReadWriteLock
 import Data.Attoparsec.ByteString as A
-import Data.Attoparsec.ByteString.Char8 (isEndOfLine, endOfLine, space, isSpace_w8, decimal, signed)
-import Data.ByteString as B
+import Data.Attoparsec.ByteString.Char8 (endOfLine, space, isSpace_w8, decimal, signed)
+import Data.Attoparsec.Enumerator
 import Data.ByteString.Char8 as C
+import Data.Enumerator as E
 import Data.Maybe
-import Data.Foldable (for_)
 import System.IO
-import qualified Data.ByteString (ByteString)
+import qualified Data.ByteString as B
+import qualified Data.Enumerator.List as EL
+import qualified Data.Enumerator.Binary as EB
 import qualified Data.HashTable.IO as H
 
 type HashTable = H.BasicHashTable Key Value
@@ -22,54 +23,38 @@ type Value     = ByteString
 data Command = Get Key | Set Key Value deriving Show
 
 command :: Parser Command
-command = do
-    cmd <- takeWhile1 (not.isSpace_w8) <* space
-    case cmd of
-        "get" -> Get <$> takeWhile1 (not.isSpace_w8)
-            <* space
-            <* endOfLine
-        "set" -> do
-            key <- takeWhile1 (not.isSpace_w8)
-                <* space
-                <* signed decimal
-                <* space
-                <* signed decimal
-                <* space
-            len <- decimal <* endOfLine
-            Set key <$> A.take len <* endOfLine
-        _ -> fail $ "invalid command: " ++ C.unpack cmd
+command = (word >>= mkCommand) <* endOfLine where
+    mkCommand "get" = Get <$> word
+    mkCommand "set" = Set <$> word <* extra <*> value
+    mkCommand cmd   = fail $ "invalid command: " ++ C.unpack cmd
 
-serve :: Socket -> HashTable -> ReadWriteLock -> IO ()
-serve socket table lock = loop where
+    word   = takeWhile1 (not.isSpace_w8) <* optional space
+    value  = decimal >>= \len -> endOfLine *> A.take len
+    extra  = number >> number >> return ()
+    number = signed decimal >> space
+
+
+serve :: Socket -> HashTable -> IO ()
+serve socket table = loop where
     loop = do
         (handle,_,_) <- accept socket
+        hSetBuffering handle LineBuffering
         forkIO $ serveClient handle
         loop
 
-    serveClient handle = processCmds "" where
-        processCmds = parseWith readChunk command >=> respond
+    serveClient handle = exec $ commands $$ respond where
+        exec i   = run i >>= print
+        commands = EB.enumHandle 1024 handle $= E.sequence (iterParser command)
+        respond  = EL.concatMapM response =$ EB.iterHandle handle
 
-        respond (Done trailing cmd) = do
-            case cmd of
-                Get key -> withReadLock lock $ do
-                    val <- lookup key
-                    for_ val $ \val -> do
-                        let len = C.pack . show . B.length $ val
-                        putStrs ["VALUE ", key, " 0 "]
-                        putLns  [len, val]
-                    putStrLn "END"
-                Set key value -> do
-                    withWriteLock lock $ insert key value
-                    putStrLn "STORED"
-            hFlush handle
-            processCmds trailing
-        respond _ = return ()
-
-        readChunk = hGetSome handle 1024
-        putStr    = C.hPutStr handle
-        putStrLn  = C.hPutStrLn handle
-        putStrs   = mapM_ putStr
-        putLns    = mapM_ putStrLn
+        response (Get key) = do
+            val <- lookup key
+            case val of
+                Just val -> do
+                    let len = C.pack . show . B.length $ val
+                    return ["VALUE ", key, " 0 ", len, "\n", val, "\nEND\n"]
+                Nothing -> return ["END\n"]
+        response (Set key value) = insert key value >> return ["STORED\n"]
 
     insert = H.insert table
     lookup = H.lookup table
@@ -78,5 +63,4 @@ main :: IO ()
 main = withSocketsDo $ do
     socket <- listenOn (PortNumber 11211)
     table  <- H.new
-    lock   <- newReadWriteLock
-    serve socket table lock
+    serve socket table
