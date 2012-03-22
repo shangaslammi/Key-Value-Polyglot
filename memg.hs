@@ -54,6 +54,7 @@ serve socket table = acceptConn where
                     let len = C.pack . show . B.length $ val
                     return ["VALUE ", key, " 0 ", len, "\n", val, "\nEND\n"]
                 Nothing -> return ["END\n"]
+
         response (Set key value) = insert key value >> return ["STORED\n"]
 
     insert = H.insert table
